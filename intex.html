@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TypeQuest — Typing Game</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b1020; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; }
+    #game { width: 100%; height: 100%; }
+    .hidden { display: none; }
+    .btn { padding: .6rem 1rem; background: #1f6feb; color: white; border: 0; border-radius: 12px; font-weight: 700; cursor: pointer; }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+  </style>
+  <!-- Phaser 3 from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game"></div>
+
+  <script>
+  // ------------------------------------------------------------
+  // TypeQuest — A level-based typing game built with Phaser 3
+  // Uploadable to Poki as a standard HTML5 game (no backend).
+  // ------------------------------------------------------------
+
+  // Optional Poki SDK (uncomment on Poki; leave commented for local dev)
+  // window.PokiSDK = window.PokiSDK || { init: () => Promise.resolve(), commercialBreak: () => Promise.resolve(), rewardedBreak: () => Promise.resolve() };
+
+  const GAME_CONFIG = {
+    title: 'TypeQuest',
+    livesPerRun: 3,
+    wordsPerLevel: 20,          // words to clear to finish a level
+    baseSpawnMs: 1600,          // lower = harder
+    baseSpeed: 60,              // pixels/sec fall speed baseline
+    spawnDecay: 0.86,           // spawn interval multiplier per level
+    speedGrowth: 1.18,          // speed multiplier per level
+    maxSimultaneousWords: 8,
+    inputGraceMs: 3200,         // time window for speed bonus
+    fonts: ['system-ui','Segoe UI','Roboto','Inter','Arial']
+  };
+
+  const WORD_BANK = {
+    easy: [
+      'cat','dog','sun','moon','tree','rock','fish','book','time','code','lava','milk','star','java','node','play','fast','glow','blue','red','pink','jump','run','ball','note'
+    ],
+    medium: [
+      'planet','silver','rocket','wizard','puzzle','oceanic','bright','random','vector','galaxy','castle','thunder','jungle','velvet','sprint','python','buffer','stream','lambda','module','syntax','object','future','packet'
+    ],
+    hard: [
+      'quantum','phoenix','variable','function','keyboard','mountain','nebulae','gradient','override','pipeline','iterator','sapphire','terminal','asteroid','envelope','boundary','entropy','cerulean','dynamics','protocol'
+    ],
+    insane: [
+      'C0d3-Runner','HyperDrive','Async/Await','Queue<Msg>','TCP_Handshake','try{catch}','NaN??Null','let x=42;','<div/>','printf(\"ok\")','Kappa-π','Ωmega!','F-ma=ma','A*Path','CAPSLOCK','Num#Lock','Ctrl+Alt','shift_Left','TypeQuest','PokiReady'
+    ]
+  };
+
+  function wordsForLevel(level){
+    if(level <= 2) return WORD_BANK.easy;
+    if(level <= 4) return WORD_BANK.medium;
+    if(level <= 6) return WORD_BANK.hard;
+    return WORD_BANK.insane;
+  }
+
+  function makeWord(level){
+    const bank = wordsForLevel(level);
+    let w = bank[Math.floor(Math.random()*bank.length)];
+    // introduce casing and numbers gradually
+    if(level >= 3 && Math.random() < 0.3){
+      // Capitalize random char
+      const i = Math.floor(Math.random()*w.length);
+      w = w.slice(0,i) + w[i].toUpperCase() + w.slice(i+1);
+    }
+    if(level >= 5 && Math.random() < 0.28){
+      // Append random digit
+      w += Math.floor(Math.random()*10);
+    }
+    if(level >= 7 && Math.random() < 0.24){
+      // Insert a symbol
+      const symbols = ['-','_','/','!','#','?'];
+      const i = 1 + Math.floor(Math.random()*(w.length-1));
+      w = w.slice(0,i) + symbols[Math.floor(Math.random()*symbols.length)] + w.slice(i);
+    }
+    return w;
+  }
+
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+  class BootScene extends Phaser.Scene {
+    constructor(){ super('boot'); }
+    preload(){
+      // We can generate simple sounds using WebAudio (no assets needed)
+      this.load.audio('ok', 'data:audio/wav;base64,UklGRmQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAACAAACaW5mbyBieSBWQQAA');
+      this.load.audio('bad', 'data:audio/wav;base64,UklGRmQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAACAAACaW5mbyBieSBWQQAA');
+    }
+    create(){
+      this.scene.start('menu');
+    }
+  }
+
+  class MenuScene extends Phaser.Scene {
+    constructor(){ super('menu'); }
+    create(){
+      const { width, height } = this.scale;
+      const g = this.add.graphics();
+      drawGradientBg(g, width, height);
+
+      const title = this.add.text(width/2, height*0.25, 'TYPEQUEST', {
+        fontFamily: GAME_CONFIG.fonts.join(','),
+        fontSize: '64px', fontStyle: '800', color: '#ffffff'
+      }).setOrigin(0.5);
+
+      const sub = this.add.text(width/2, height*0.35, 'Type to survive. Level up to thrive.', {
+        fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '20px', color: '#c7d2fe'
+      }).setOrigin(0.5);
+
+      const best = Number(localStorage.getItem('tq_best_level')||1);
+
+      const info = this.add.text(width/2, height*0.46, `Best Level: ${best}`, {
+        fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '18px', color: '#a5b4fc'
+      }).setOrigin(0.5);
+
+      const start = this.add.text(width/2, height*0.58, 'Press ENTER to Start', {
+        fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '24px', color: '#ffffff'
+      }).setOrigin(0.5).setPadding(10).setBackgroundColor('#334155').setStroke('#93c5fd', 4).setShadow(2,2,'#000',2);
+
+      const help = this.add.text(width/2, height*0.75, 'Tip: Start typing any visible word to lock it.\nBackspace = cancel target. Esc = pause.', {
+        fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '16px', color: '#93c5fd', align: 'center'
+      }).setOrigin(0.5);
+
+      this.input.keyboard.once('keydown-ENTER', ()=>{
+        this.scene.start('play', { level: 1, score: 0, lives: GAME_CONFIG.livesPerRun });
+      });
+    }
+  }
+
+  class PlayScene extends Phaser.Scene {
+    constructor(){ super('play'); }
+    init(data){
+      this.level = data.level || 1;
+      this.score = data.score || 0;
+      this.lives = data.lives ?? GAME_CONFIG.livesPerRun;
+      this.clearedThisLevel = 0;
+      this.activeTarget = null;  // {obj, word, progress, born}
+      this.accuracy = { keys: 0, hits: 0 };
+      this.spawnMs = Math.max(450, GAME_CONFIG.baseSpawnMs * Math.pow(GAME_CONFIG.spawnDecay, this.level-1));
+      this.speed = GAME_CONFIG.baseSpeed * Math.pow(GAME_CONFIG.speedGrowth, this.level-1);
+      this.nextSpawn = 0;
+    }
+    create(){
+      const { width, height } = this.scale;
+      this.bg = this.add.graphics();
+      drawGradientBg(this.bg, width, height, this.level);
+
+      this.words = this.add.group();
+
+      this.hud = this.add.text(12, 10, '', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '18px', color: '#e2e8f0' }).setDepth(10);
+      this.typeBarBg = this.add.rectangle(width/2, height-36, width-40, 40, 0x0b1225, 0.6).setStrokeStyle(2, 0x93c5fd).setDepth(10);
+      this.typeBar = this.add.text(24, height-48, '', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '24px', color: '#e5e7eb' }).setDepth(11);
+
+      this.particles = this.add.particles(0,0,''); // placeholder emitter using Shapes
+      this.emitter = this.add.particles(0,0,'').createEmitter({
+        x: 0, y: 0, speed: {min:-60, max:60}, lifespan: 600, quantity: 18, gravityY: 80, scale: {start:1, end:0}, tint: [0x93c5fd,0x60a5fa,0xbfdbfe]
+      });
+      this.emitter.stop();
+
+      this.input.keyboard.on('keydown', (ev)=>this.handleKey(ev));
+      this.input.keyboard.on('keydown-ESC', ()=> this.pause());
+
+      this.updateHUD();
+    }
+    handleKey(ev){
+      if(ev.key === 'Backspace'){
+        this.cancelTarget();
+        return;
+      }
+      if(ev.key.length === 1){
+        this.accuracy.keys++;
+        const ch = ev.key;
+        if(!this.activeTarget){
+          // find a word that starts with this char (case sensitive)
+          const candidates = this.words.getChildren().filter(obj => obj.getData('word').startsWith(ch));
+          if(candidates.length){
+            // choose the closest to bottom to add urgency
+            candidates.sort((a,b)=> b.y - a.y);
+            const obj = candidates[0];
+            this.activeTarget = { obj, word: obj.getData('word'), progress: ch.length, born: this.time.now };
+            obj.setStyle({ color: '#34d399' });
+            obj.setData('matched', ch);
+            this.playClick(true);
+          } else {
+            // miss key
+            this.playClick(false);
+          }
+        } else {
+          // Continue matching
+          const { obj, word } = this.activeTarget;
+          const want = word[this.activeTarget.progress] || '';
+          if(ch === want){
+            this.activeTarget.progress++;
+            obj.setData('matched', word.slice(0, this.activeTarget.progress));
+            const rest = word.slice(this.activeTarget.progress);
+            obj.setText(obj.getData('matched') + rest);
+            this.playClick(true);
+
+            if(this.activeTarget.progress >= word.length){
+              this.wordCleared(obj);
+              this.cancelTarget(true);
+            }
+          } else {
+            // Wrong key — small penalty by flashing
+            this.flashObj(obj, 0xff3b3b);
+            this.playClick(false);
+          }
+        }
+        this.updateTypeBar();
+      }
+    }
+    playClick(ok){
+      this.accuracy.hits += ok ? 1 : 0;
+    }
+    cancelTarget(keepBar){
+      if(this.activeTarget){
+        const { obj } = this.activeTarget;
+        obj.setStyle({ color: '#ffffff' });
+        obj.setText(obj.getData('word'));
+      }
+      this.activeTarget = null;
+      if(!keepBar) this.typeBar.setText('');
+    }
+    wordCleared(obj){
+      const timeToType = this.time.now - (this.activeTarget?.born || this.time.now);
+      const speedBonus = timeToType < GAME_CONFIG.inputGraceMs ? 10 : 0;
+      const base = 25 + Math.floor(this.level * 2 + obj.getData('word').length * 2);
+      this.score += base + speedBonus;
+      this.clearedThisLevel++;
+      this.emitter.setPosition(obj.x, obj.y);
+      this.emitter.explode(24);
+      obj.destroy();
+
+      if(this.clearedThisLevel >= GAME_CONFIG.wordsPerLevel){
+        const nextLevel = this.level + 1;
+        const best = Number(localStorage.getItem('tq_best_level')||1);
+        if(nextLevel-1 > best){ localStorage.setItem('tq_best_level', String(nextLevel-1)); }
+        this.scene.start('levelup', { level: nextLevel, score: this.score, lives: this.lives });
+      }
+      this.updateHUD();
+    }
+    flashObj(obj, color){
+      obj.setTint(color);
+      this.tweens.add({ targets: obj, alpha: 0.2, yoyo: true, duration: 60, repeat: 0, onComplete: ()=> obj.clearTint() });
+    }
+    update(time, delta){
+      // spawn logic
+      this.nextSpawn -= delta;
+      if(this.words.getLength() < GAME_CONFIG.maxSimultaneousWords && this.nextSpawn <= 0){
+        this.spawnWord();
+        this.nextSpawn = this.spawnMs * (0.6 + Math.random()*0.8);
+      }
+      // move words
+      this.words.getChildren().forEach(obj => {
+        obj.y += this.speed * (delta/1000);
+        if(obj.y > this.scale.height - 56){
+          // word missed
+          if(this.activeTarget && this.activeTarget.obj === obj){ this.cancelTarget(); }
+          obj.destroy();
+          this.onLifeLost();
+        }
+      });
+    }
+    spawnWord(){
+      const w = makeWord(this.level);
+      const x = 40 + Math.random() * (this.scale.width - 80);
+      const y = -10;
+      const txt = this.add.text(x, y, w, {
+        fontFamily: GAME_CONFIG.fonts.join(','), fontSize: clamp(16 + (8 - Math.min(w.length, 8)), 16, 28) + 'px', color:'#ffffff'
+      }).setOrigin(0.5);
+      txt.setData('word', w);
+      txt.setData('matched', '');
+      this.words.add(txt);
+    }
+    onLifeLost(){
+      this.lives--;
+      this.flashScreen(0xff0040);
+      if(this.lives <= 0){
+        const best = Number(localStorage.getItem('tq_best_level')||1);
+        if(this.level > best){ localStorage.setItem('tq_best_level', String(this.level)); }
+        this.scene.start('gameover', { level: this.level, score: this.score });
+      }
+      this.updateHUD();
+    }
+    flashScreen(color){
+      const r = this.add.rectangle(this.scale.width/2, this.scale.height/2, this.scale.width, this.scale.height, color, 0.15).setDepth(100);
+      this.tweens.add({ targets: r, alpha: 0, duration: 220, onComplete: ()=> r.destroy() });
+    }
+    updateHUD(){
+      const acc = this.accuracy.keys ? Math.round((this.accuracy.hits/this.accuracy.keys)*100) : 100;
+      this.hud.setText(`Level ${this.level}  |  Score ${this.score}  |  Lives ${this.lives}  |  Cleared ${this.clearedThisLevel}/${GAME_CONFIG.wordsPerLevel}  |  Acc ${acc}%`);
+    }
+    updateTypeBar(){
+      if(this.activeTarget){
+        const { word, progress } = this.activeTarget;
+        const shown = word.slice(0, progress).replace(/ /g,'␣');
+        this.typeBar.setText(shown);
+      } else {
+        this.typeBar.setText('');
+      }
+    }
+    pause(){
+      this.scene.pause();
+      this.scene.launch('pause', { level: this.level, score: this.score, lives: this.lives });
+    }
+  }
+
+  class PauseScene extends Phaser.Scene {
+    constructor(){ super('pause'); }
+    create(data){
+      const { width, height } = this.scale;
+      const overlay = this.add.rectangle(width/2, height/2, width, height, 0x000000, 0.5);
+      const card = this.add.rectangle(width/2, height/2, Math.min(520, width-40), 240, 0x0b1225, 0.96).setStrokeStyle(3, 0x93c5fd).setCornerRadius(16);
+      const t = this.add.text(width/2, height/2-64, 'Paused', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '36px', color: '#ffffff' }).setOrigin(0.5);
+      const s = this.add.text(width/2, height/2, 'Esc to resume  •  R to restart level  •  Q to quit', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '18px', color: '#c7d2fe' }).setOrigin(0.5);
+
+      this.input.keyboard.once('keydown-ESC', ()=> this.resumeGame());
+      this.input.keyboard.once('keydown-R', ()=> this.restartLevel(data));
+      this.input.keyboard.once('keydown-Q', ()=> this.quit());
+    }
+    resumeGame(){ this.scene.stop(); this.scene.resume('play'); }
+    restartLevel(d){ this.scene.stop(); this.scene.stop('play'); this.scene.start('play', { level: d.level, score: d.score, lives: d.lives }); }
+    quit(){ this.scene.stop(); this.scene.stop('play'); this.scene.start('menu'); }
+  }
+
+  class LevelUpScene extends Phaser.Scene {
+    constructor(){ super('levelup'); }
+    create(data){
+      const { width, height } = this.scale;
+      const panel = this.add.rectangle(width/2, height/2, Math.min(560, width-40), 280, 0x0b1225, 0.96).setStrokeStyle(3, 0x34d399).setCornerRadius(16);
+      const t1 = this.add.text(width/2, height/2-80, `Level ${data.level-1} Complete!`, { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '32px', color: '#34d399' }).setOrigin(0.5);
+      const t2 = this.add.text(width/2, height/2-30, `Score: ${data.score}`, { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '22px', color: '#e2e8f0' }).setOrigin(0.5);
+      const t3 = this.add.text(width/2, height/2+20, `Next: Level ${data.level}`, { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '20px', color: '#93c5fd' }).setOrigin(0.5);
+      const t4 = this.add.text(width/2, height/2+80, 'Press ENTER to continue', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '18px', color: '#ffffff' }).setOrigin(0.5);
+      this.input.keyboard.once('keydown-ENTER', ()=>{
+        this.scene.start('play', { level: data.level, score: data.score, lives: data.lives });
+      });
+    }
+  }
+
+  class GameOverScene extends Phaser.Scene {
+    constructor(){ super('gameover'); }
+    create(data){
+      const { width, height } = this.scale;
+      const card = this.add.rectangle(width/2, height/2, Math.min(560, width-40), 320, 0x0b1225, 0.96).setStrokeStyle(3, 0xf87171).setCornerRadius(16);
+      const t1 = this.add.text(width/2, height/2-96, 'Game Over', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '36px', color: '#fecaca' }).setOrigin(0.5);
+      const t2 = this.add.text(width/2, height/2-46, `Level Reached: ${data.level}`, { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '22px', color: '#e2e8f0' }).setOrigin(0.5);
+      const t3 = this.add.text(width/2, height/2-6, `Final Score: ${data.score}`, { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '22px', color: '#e2e8f0' }).setOrigin(0.5);
+      const t4 = this.add.text(width/2, height/2+48, 'Press R to retry • Press M for Menu', { fontFamily: GAME_CONFIG.fonts.join(','), fontSize: '18px', color: '#c7d2fe' }).setOrigin(0.5);
+      this.input.keyboard.once('keydown-R', ()=> this.scene.start('play', { level: 1, score: 0, lives: GAME_CONFIG.livesPerRun }));
+      this.input.keyboard.once('keydown-M', ()=> this.scene.start('menu'));
+    }
+  }
+
+  function drawGradientBg(g, w, h, level=1){
+    g.clear();
+    const colors = [
+      [0x0b1020, 0x0e1a3a], // Lv1 night blue
+      [0x141126, 0x2a1f4a], // Lv2 purple
+      [0x0b1f1a, 0x0a3a32], // Lv3 teal
+      [0x24110b, 0x3c1f15], // Lv4 ember
+      [0x0b0b24, 0x1a1a5a], // Lv5 indigo
+      [0x10200b, 0x2f4a1f], // Lv6 green
+      [0x20100b, 0x4a2a1f], // Lv7 copper
+      [0x100b20, 0x2a1f4a], // Lv8 violet
+    ];
+    const pair = colors[(level-1) % colors.length];
+
+    const rt = g.scene.make.renderTexture({ x: 0, y: 0, width: w, height: h, add: false });
+    const steps = 24;
+    for(let i=0;i<steps;i++){
+      const t = i/(steps-1);
+      const c = Phaser.Display.Color.Interpolate.ColorWithColor(
+        Phaser.Display.Color.IntegerToColor(pair[0]),
+        Phaser.Display.Color.IntegerToColor(pair[1]),
+        steps-1,
+        i
+      );
+      const hex = Phaser.Display.Color.GetColor(c.r, c.g, c.b);
+      g.fillStyle(hex, 1);
+      g.fillRect(0, t*h, w, Math.ceil(h/steps)+1);
+    }
+    g.lineStyle(0);
+  }
+
+  const config = {
+    type: Phaser.AUTO,
+    parent: 'game',
+    backgroundColor: '#0b1020',
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 900, height: 600 },
+    scene: [BootScene, MenuScene, PlayScene, PauseScene, LevelUpScene, GameOverScene]
+  };
+
+  const game = new Phaser.Game(config);
+
+  // Quality-of-life: prevent page scroll on space/backspace
+  window.addEventListener('keydown', (e)=>{
+    const tag = (e.target && e.target.tagName) || '';
+    if(['INPUT','TEXTAREA'].includes(tag)) return;
+    if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Backspace'].includes(e.code)) e.preventDefault();
+  });
+
+  </script>
+</body>
+</html>
